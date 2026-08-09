@@ -12,71 +12,93 @@ jobs:
     runs-on: macos-latest
 
     steps:
+
       # -------------------------------------------------------
-      # 1. Télécharger Amethyst + tous les submodules
+      # Checkout
       # -------------------------------------------------------
-      - name: Checkout Amethyst
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 0
 
-      # -------------------------------------------------------
-      # 2. Installer Java 8
-      # Amethyst demande un JDK 8 pour la compilation Java
-      # -------------------------------------------------------
-      - name: Setup Java 8
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '8'
 
       # -------------------------------------------------------
-      # 3. Installer les dépendances nécessaires
+      # Java 8
+      #
+      # IMPORTANT :
+      # Zulu fonctionne avec Java 8 sur Apple Silicon.
+      # -------------------------------------------------------
+      - name: Setup Java 8
+        uses: actions/setup-java@v5
+        with:
+          distribution: zulu
+          java-version: '8'
+          java-package: jdk
+
+
+      # -------------------------------------------------------
+      # Vérification Java
+      # -------------------------------------------------------
+      - name: Check Java
+        shell: bash
+        run: |
+          set -eux
+
+          echo "JAVA_HOME=$JAVA_HOME"
+
+          java -version
+          javac -version
+
+          "$JAVA_HOME/bin/java" -version
+          "$JAVA_HOME/bin/javac" -version
+
+
+      # -------------------------------------------------------
+      # Installer les dépendances
       # -------------------------------------------------------
       - name: Install build dependencies
         shell: bash
         run: |
-          set -euxo pipefail
+          set -eux
 
           brew update
 
-          brew install \
-            make \
-            cmake \
-            wget \
-            ldid
+          brew install make || true
+          brew install cmake || true
+          brew install wget || true
+          brew install ldid || true
 
-          echo "Homebrew prefix:"
+          echo "Homebrew:"
           brew --prefix
 
-          echo "GNU Make prefix:"
-          brew --prefix make
-
-          echo "gmake:"
+          echo "GNU Make:"
           "$(brew --prefix make)/bin/gmake" --version
 
-          echo "cmake:"
+          echo "CMake:"
           cmake --version
-
-          echo "ldid:"
-          which ldid
 
           echo "wget:"
           wget --version | head -n 1
 
+          echo "ldid:"
+          which ldid
+          ldid 2>&1 | head -n 5 || true
+
+
       # -------------------------------------------------------
-      # 4. Corriger le chemin /usr/local/bin/gmake
-      # Certains fichiers du projet cherchent exactement ici
+      # Amethyst/Xcode cherche parfois exactement :
+      # /usr/local/bin/gmake
       # -------------------------------------------------------
       - name: Fix gmake path
         shell: bash
         run: |
-          set -euxo pipefail
+          set -eux
 
           GMAKE="$(brew --prefix make)/bin/gmake"
 
-          echo "gmake réel = $GMAKE"
+          echo "GNU Make real path:"
+          echo "$GMAKE"
 
           test -x "$GMAKE"
 
@@ -84,115 +106,179 @@ jobs:
           sudo rm -f /usr/local/bin/gmake
           sudo ln -s "$GMAKE" /usr/local/bin/gmake
 
-          echo "Vérification:"
+          echo "Verification:"
           ls -la /usr/local/bin/gmake
+
           /usr/local/bin/gmake --version
 
+
+      # -------------------------------------------------------
+      # Ajouter les outils au PATH
+      # -------------------------------------------------------
+      - name: Configure PATH
+        shell: bash
+        run: |
+          echo "/usr/local/bin" >> "$GITHUB_PATH"
           echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
           echo "$(brew --prefix make)/bin" >> "$GITHUB_PATH"
           echo "$(brew --prefix make)/libexec/gnubin" >> "$GITHUB_PATH"
-          echo "/usr/local/bin" >> "$GITHUB_PATH"
+
 
       # -------------------------------------------------------
-      # 5. Vérifier Xcode
+      # Vérifier Xcode + SDK iPhone
       # -------------------------------------------------------
-      - name: Check Xcode
+      - name: Check Xcode and iOS SDK
         shell: bash
         run: |
-          set -euxo pipefail
+          set -eux
 
           xcodebuild -version
+
+          echo "iPhoneOS SDK:"
           xcrun --sdk iphoneos --show-sdk-path
+
+          echo "SDK version:"
+          xcrun --sdk iphoneos --show-sdk-version
+
+          echo "Clang:"
           clang --version
 
-      # -------------------------------------------------------
-      # 6. Vérifier Java
-      # -------------------------------------------------------
-      - name: Check Java
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          echo "JAVA_HOME=$JAVA_HOME"
-          "$JAVA_HOME/bin/java" -version
-          "$JAVA_HOME/bin/javac" -version
 
       # -------------------------------------------------------
-      # 7. Vérifier que tous les submodules existent
+      # Vérifier les submodules
       # -------------------------------------------------------
       - name: Check submodules
         shell: bash
         run: |
-          set -euxo pipefail
+          set -eux
+
+          git submodule sync --recursive
+          git submodule update --init --recursive
 
           git submodule status --recursive
 
+
       # -------------------------------------------------------
-      # 8. Compiler Amethyst iOS
-      #
-      # PLATFORM=2 = iOS
-      # SLIMMED=1 = crée aussi la version slimmed
+      # Vérification complète avant compilation
       # -------------------------------------------------------
-      - name: Build Amethyst iOS
+      - name: Pre-build checks
+        shell: bash
+        run: |
+          set -eux
+
+          echo "===== SYSTEM ====="
+          uname -a
+          uname -m
+          sw_vers
+
+          echo "===== JAVA ====="
+          echo "$JAVA_HOME"
+          "$JAVA_HOME/bin/javac" -version
+
+          echo "===== GMAKE ====="
+          which gmake
+          gmake --version
+
+          echo "===== FIXED GMAKE ====="
+          ls -la /usr/local/bin/gmake
+          /usr/local/bin/gmake --version
+
+          echo "===== CMAKE ====="
+          which cmake
+          cmake --version
+
+          echo "===== LDID ====="
+          which ldid
+
+          echo "===== WGET ====="
+          which wget
+
+          echo "===== SDK ====="
+          xcrun --sdk iphoneos --show-sdk-path
+
+
+      # -------------------------------------------------------
+      # Compiler IPA SideStore
+      # -------------------------------------------------------
+      - name: Build Amethyst iOS IPA
         shell: bash
         run: |
           set -euxo pipefail
 
           export PATH="/usr/local/bin:$(brew --prefix)/bin:$(brew --prefix make)/bin:$PATH"
 
-          echo "PATH=$PATH"
-
-          which gmake
-          gmake --version
-
           export SLIMMED=1
 
-          gmake \
+          SDKPATH="$(xcrun --sdk iphoneos --show-sdk-path)"
+
+          echo "======================================"
+          echo "Build configuration"
+          echo "======================================"
+          echo "JAVA_HOME=$JAVA_HOME"
+          echo "BOOTJDK=$JAVA_HOME/bin"
+          echo "SDKPATH=$SDKPATH"
+          echo "GMAKE=$(which gmake)"
+          echo "ARCH=$(uname -m)"
+          echo "======================================"
+
+          "$JAVA_HOME/bin/javac" -version
+
+          /usr/local/bin/gmake \
             -j"$(sysctl -n hw.ncpu)" \
             dsym \
             package \
             PLATFORM=2 \
             SLIMMED=1 \
-            BOOTJDK="$JAVA_HOME/bin"
+            BOOTJDK="$JAVA_HOME/bin" \
+            SDKPATH="$SDKPATH"
+
 
       # -------------------------------------------------------
-      # 9. Voir les fichiers créés
+      # Afficher les résultats même si erreur
       # -------------------------------------------------------
-      - name: Show build artifacts
+      - name: Show artifacts
         if: always()
         shell: bash
         run: |
-          echo "=== ARTIFACTS ==="
-          find artifacts -maxdepth 2 -type f -print 2>/dev/null || true
+          echo "======================================"
+          echo "ARTIFACTS"
+          echo "======================================"
+
+          if [ -d artifacts ]; then
+            find artifacts -maxdepth 3 -type f -print
+          else
+            echo "No artifacts directory"
+          fi
+
 
       # -------------------------------------------------------
-      # 10. IPA complète pour SideStore
+      # IPA normale
       # -------------------------------------------------------
-      - name: Upload Amethyst IPA
+      - name: Upload full IPA
         uses: actions/upload-artifact@v4
         with:
           name: Amethyst-iOS-Full
-          path: |
-            artifacts/org.angelauramc.amethyst-*-ios.ipa
+          path: artifacts/org.angelauramc.amethyst-*-ios.ipa
           if-no-files-found: error
 
+
       # -------------------------------------------------------
-      # 11. IPA slimmed
+      # IPA slim
       # -------------------------------------------------------
-      - name: Upload Amethyst Slimmed IPA
+      - name: Upload slimmed IPA
         uses: actions/upload-artifact@v4
         with:
           name: Amethyst-iOS-Slimmed
-          path: |
-            artifacts/org.angelauramc.amethyst.slimmed-*-ios.ipa
+          path: artifacts/org.angelauramc.amethyst.slimmed-*-ios.ipa
           if-no-files-found: warn
 
+
       # -------------------------------------------------------
-      # 12. Symboles de debug
+      # dSYM
       # -------------------------------------------------------
       - name: Upload dSYM
         uses: actions/upload-artifact@v4
         with:
-          name: Amethyst-dSYM
+          name: AngelAuraAmethyst-dSYM
           path: artifacts/AngelAuraAmethyst.dSYM
           if-no-files-found: warn
